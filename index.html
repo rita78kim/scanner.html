@@ -1,0 +1,99 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Bybit Scanner</title>
+<style>
+:root{--bg:#0b0e14;--p:#121722;--b:#222a3a;--t:#d5dbe8;--m:#7d8799;--g:#26d07c;--r:#ff5370;--y:#f5b942;--bl:#4da3ff}*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--t);font:13px/1.4 ui-monospace,Menlo,Consolas,monospace}
+header{display:flex;flex-wrap:wrap;gap:14px;align-items:center;padding:10px 12px;background:var(--p);border-bottom:1px solid var(--b);font-size:14px}
+.pill{padding:2px 10px;border-radius:12px;border:1px solid;font-weight:700;margin-left:auto}
+main{display:grid;grid-template-columns:minmax(340px,460px) 1fr;gap:8px;padding:8px}@media(max-width:900px){main{grid-template-columns:1fr}}
+section{background:var(--p);border:1px solid var(--b);border-radius:6px;padding:8px;min-width:0}
+input,select,button{background:#0e1320;color:var(--t);border:1px solid var(--b);border-radius:4px;padding:6px 8px;font:inherit}button{cursor:pointer}button.on{background:#1d2a45;border-color:var(--bl);color:#fff}
+.row{display:flex;gap:6px;margin-bottom:6px}.row>*{flex:1;min-width:0}
+.tw{max-height:70vh;overflow:auto}table{width:100%;border-collapse:collapse}th{position:sticky;top:0;background:var(--p);color:var(--m);font-weight:400;text-align:right;padding:4px}
+td{padding:6px 4px;text-align:right;border-top:1px solid #1a2132}th:first-child,td:first-child{text-align:left}tbody tr{cursor:pointer}tr.s{background:#18233a}
+.g{color:var(--g)}.r{color:var(--r)}.y{color:var(--y)}.bl{color:var(--bl)}.m{color:var(--m)}
+#cv{width:100%;height:320px;display:block;background:#0a0d13;border-radius:4px;touch-action:none;cursor:ns-resize;margin:8px 0}
+.f{display:grid;grid-template-columns:60px 1fr;gap:6px;align-items:center;margin-bottom:6px}.f input{width:100%}
+.big{font-size:20px;font-weight:700}
+.stale td,.stale #px,.stale #bt{opacity:.45}</style></head><body>
+<header><b>MARKET</b><span id="bt">—</span><span id="ws" class="pill m">CONNECTING</span></header>
+<main>
+<section>
+<div class="row"><input id="q" placeholder="검색"><select id="fl"><option value="ALL">전체</option><option>BREAKOUT</option><option>RETEST</option><option>WATCH</option><option>EXTENDED</option><option value="ALIGNED">MTF ALIGNED</option></select><select id="so"><option value="st">정렬: STATE</option><option value="ch">24H %</option><option value="vol">VOL</option></select></div>
+<div class="tw"><table><thead><tr><th>COIN</th><th>PRICE</th><th>24H</th><th>VOL</th><th>MTF</th><th>STATE</th></tr></thead><tbody id="tb"></tbody></table></div></section>
+<section>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><span class="big" id="hd">—</span><span class="big" id="px"></span></div>
+<div class="row" style="margin-top:8px"><button id="bl">LONG</button><button id="bs">SHORT</button><button id="ba">AUTO</button></div>
+<div id="info" style="font-size:15px;margin:6px 0"></div>
+<div class="row"><button data-tf="5">5m</button><button data-tf="15">15m</button><button data-tf="60">1h</button></div>
+<canvas id="cv"></canvas>
+<div class="f"><span>Entry</span><input id="en" type="number" step="any"></div><div class="f"><span>SL</span><input id="sl" type="number" step="any"></div><div class="f"><span>TP</span><input id="tp" type="number" step="any"></div>
+<div>R:R <b class="big" id="rr">—</b> <span id="wn" class="y"></span></div></section>
+</main>
+<script>
+const API='https://api.bybit.com',WSU='wss://stream.bybit.com/v5/public/linear',$=s=>document.querySelector(s);
+const T={},K={};let U=[],sel='',tf=15,side=1,plan={},ws,pg,rc,dirty=1,drag=null,froz=null;
+const HC={};function setH(id,h){if(HC[id]!==h){HC[id]=h;$(id).innerHTML=h}}
+let initing=0,live=0,lastMsg=0,ra=0,gap=0,lastR=0,tm=0;
+const status=t=>{live=t=='LIVE';document.body.classList.toggle('stale',!live);const e=$('#ws');e.textContent=t;e.className='pill '+(t=='LIVE'?'g':t=='DISCONNECTED'?'r':'y')};
+/* MARKET DATA ONLY: no order/position/balance endpoints, no API keys */
+async function j(u){if(!/^\/v5\/market\//.test(u))throw 'market-data only';const d=await(await fetch(API+u)).json();if(d.retCode)throw d.retMsg;return d.result}
+async function kl(s,iv){const r=await j(`/v5/market/kline?category=linear&symbol=${s}&interval=${iv}&limit=100`);const n=r.list.reverse().map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]})),o=(K[s]&&K[s][iv])||[],L=n[n.length-1].t;(K[s]=K[s]||{})[iv]=n.concat(o.filter(x=>x.t>L))}
+async function init(){if(initing)return;initing=1;try{const r=await j('/v5/market/tickers?category=linear');
+const l=r.list.filter(x=>/^[A-Z0-9]+USDT$/.test(x.symbol)).sort((a,b)=>b.turnover24h-a.turnover24h).slice(0,40);
+U=l.map(x=>x.symbol);l.forEach(x=>T[x.symbol]=x);
+for(let i=0;i<U.length;i+=8)await Promise.all(U.slice(i,i+8).flatMap(s=>[5,15,60].map(v=>kl(s,v))));
+connect();pick(U.includes('BTCUSDT')?'BTCUSDT':U[0])}catch(e){initing=0;status('DISCONNECTED');setH('#tb','<tr><td colspan=6 class="r">Bybit API 연결 실패: '+e+'<br><span class="m">로컬에서 index.html을 직접 열어야 합니다 (일부 국가 IP는 Bybit이 차단).</span></td></tr>');setTimeout(init,5000)}}
+async function resync(){for(let i=0;i<U.length;i+=8)await Promise.all(U.slice(i,i+8).flatMap(s=>[5,15,60].map(v=>kl(s,v).catch(()=>0))));dirty=1;sched()}
+function connect(){if(ws){ws.onopen=ws.onmessage=ws.onclose=ws.onerror=null;try{ws.close()}catch(e){}ws=null}clearInterval(pg);clearTimeout(rc);status('CONNECTING');
+const w=ws=new WebSocket(WSU);
+const down=()=>{if(w!==ws)return;w.onopen=w.onmessage=w.onclose=w.onerror=null;try{w.close()}catch(e){}ws=null;clearInterval(pg);if(!gap)gap=Date.now();status('DISCONNECTED');clearTimeout(rc);ra=Math.min(ra+1,8);rc=setTimeout(connect,1000*ra)};w._down=down;
+w.onopen=()=>{if(w!==ws)return;ra=0;lastMsg=Date.now();status('LIVE');const a=U.flatMap(s=>['tickers.'+s,...[5,15,60].map(i=>`kline.${i}.${s}`)]);for(let i=0;i<a.length;i+=20)w.send(JSON.stringify({op:'subscribe',args:a.slice(i,i+20)}));pg=setInterval(()=>w.readyState==1&&w.send('{"op":"ping"}'),20000);if(gap&&Date.now()-gap>20000)resync();gap=0};
+w.onmessage=e=>{if(w!==ws)return;lastMsg=Date.now();const m=JSON.parse(e.data);if(!m.topic)return;const p=m.topic.split('.');
+if(p[0]=='tickers'){if(T[m.data.symbol])Object.assign(T[m.data.symbol],m.data)}
+else if(p[0]=='kline'){const a=K[p[2]]&&K[p[2]][p[1]];if(!a)return;m.data.forEach(x=>{const c={t:+x.start,o:+x.open,h:+x.high,l:+x.low,c:+x.close,v:+x.volume},L=a[a.length-1];if(L.t==c.t)a[a.length-1]=c;else if(c.t>L.t){a.push(c);a.shift()}})}
+dirty=1;sched()};
+w.onclose=w.onerror=down}
+function sched(){const d=250-(performance.now()-lastR);if(d<=0)flush();else if(!tm)tm=setTimeout(flush,d)}
+function flush(){clearTimeout(tm);tm=0;if(!dirty)return;dirty=0;lastR=performance.now();render()}
+const sma=(a,n)=>a.slice(-n).reduce((q,x)=>q+x.c,0)/n;
+function trend(a){const m=sma(a,20),p=sma(a.slice(0,-5),20),c=a[a.length-1].c;return c>m&&m>p?1:c<m&&m<p?-1:0}
+function an(s){const k=K[s];if(!k||!T[s]||!T[s].lastPrice||!k[5]||!k[15]||!k[60]||k[15].length<35||k[5].length<22)return null;
+const t=[5,15,60].map(i=>trend(k[i])),sum=t[0]+t[1]+t[2],mtf=t.includes(1)&&t.includes(-1)?'CONFLICT':Math.abs(sum)==3?'ALIGNED':'MIXED';
+const a5=k[5],vol=a5[a5.length-1].v/(a5.slice(-21,-1).reduce((q,x)=>q+x.v,0)/20||1);
+const dir=sum>0?1:sum<0?-1:(+T[s].price24hPcnt>=0?1:-1),a=k[15],p=+T[s].lastPrice,ba=a.slice(-32,-12),rcn=a.slice(-12);
+const lv=dir>0?Math.max(...ba.map(x=>x.h)):Math.min(...ba.map(x=>x.l)),atr=a.slice(-14).reduce((q,x)=>q+x.h-x.l,0)/14||1e-9;
+const dist=dir*(p-lv)/atr,mx=Math.max(...rcn.map(x=>dir*((dir>0?x.h:x.l)-lv)/atr));
+const st=dist>1.5?'EXTENDED':(mx>.8&&dist>-.3&&dist<.5)?'RETEST':(dist>0&&vol>=1.2)?'BREAKOUT':'WATCH';
+return{t,sum,mtf,vol,dir,st,atr}}
+const dec=s=>((T[s].lastPrice.split('.')[1])||'').length,fx=v=>v.toFixed(dec(sel));
+const SC={BREAKOUT:'g',RETEST:'bl',WATCH:'m',EXTENDED:'y'},ar=t=>t>0?'↑':t<0?'↓':'→';
+function auto(){const A=an(sel);if(!A)return;const e=+T[sel].lastPrice,r=1.5*A.atr;plan={e,sl:+(e-side*r).toFixed(dec(sel)),tp:+(e+side*r*2).toFixed(dec(sel))};fill()}
+function fill(){$('#en').value=fx(plan.e);$('#sl').value=fx(plan.sl);$('#tp').value=fx(plan.tp);calc()}
+function calc(){const r=Math.abs(plan.e-plan.sl),ok=side*(plan.e-plan.sl)>0&&side*(plan.tp-plan.e)>0;$('#rr').textContent=r>0?(Math.abs(plan.tp-plan.e)/r).toFixed(2):'—';$('#wn').textContent=ok?'':'⚠ '+(side>0?'SL < Entry < TP':'TP < Entry < SL');$('#bl').className=side>0?'on':'';$('#bs').className=side<0?'on':'';draw()}
+function pick(s){sel=s;const A=an(s);side=A?A.dir:1;auto();dirty=1;render()}
+function render(){if(!U.length)return;
+const B=an('BTCUSDT');if(B&&T.BTCUSDT){const c=+T.BTCUSDT.price24hPcnt*100,d=B.sum>=2?['UP','g']:B.sum<=-2?['DOWN','r']:['NEUTRAL','y'];$('#bt').innerHTML=`BTC ${T.BTCUSDT.lastPrice} <span class="${c>=0?'g':'r'}">${c>=0?'+':''}${c.toFixed(2)}%</span> <b class="${d[1]}">${d[0]}</b>`}
+const q=$('#q').value.toUpperCase(),f=$('#fl').value,so=$('#so').value,R={BREAKOUT:3,RETEST:2,WATCH:1,EXTENDED:0};
+const a=U.filter(s=>s.includes(q)).map(s=>({s,A:an(s)})).filter(x=>x.A&&(f=='ALL'||(f=='ALIGNED'?x.A.mtf=='ALIGNED':x.A.st==f)));
+const kf=x=>so=='st'?R[x.A.st]*100+x.A.vol:so=='vol'?x.A.vol:+T[x.s].price24hPcnt;a.sort((p,q)=>kf(q)-kf(p));
+setH('#tb',a.map(({s,A})=>{const c=+T[s].price24hPcnt*100;return`<tr data-s="${s}" class="${s==sel?'s':''}"><td><b>${s.replace('USDT','')}</b></td><td>${T[s].lastPrice}</td><td class="${c>=0?'g':'r'}">${c>=0?'+':''}${c.toFixed(2)}%</td><td class="${A.vol>=1.5?'g':A.vol>=1.2?'y':'m'}">${A.vol.toFixed(1)}x</td><td class="${A.mtf=='ALIGNED'?'g':A.mtf=='MIXED'?'y':'r'}">${A.mtf}</td><td class="${SC[A.st]}">${A.st}</td></tr>`}).join('')||'<tr><td colspan=6 class="m">데이터 로딩 중 / 결과 없음</td></tr>');
+const S=an(sel);if(S&&T[sel]){$('#hd').textContent=sel.replace('USDT','')+' / USDT';$('#px').textContent=T[sel].lastPrice;
+$('#info').innerHTML=`<div>${['5m','15m','1h'].map((n,i)=>`<span class="${S.t[i]==S.dir?'g':S.t[i]?'r':'y'}" style="margin-right:14px">${n} ${ar(S.t[i])}</span>`).join('')} <b class="${S.mtf=='ALIGNED'?'g':S.mtf=='MIXED'?'y':'r'}">${S.mtf}</b></div><div>STATE <b class="${SC[S.st]}">${S.st}</b> · VOL ${S.vol.toFixed(1)}x</div>`;draw()}}
+const cv=$('#cv');
+const lines=()=>[['Price',+T[sel].lastPrice,'#d5dbe8'],['Entry',plan.e,'#4da3ff','e'],['SL',plan.sl,'#ff5370','sl'],['TP',plan.tp,'#26d07c','tp']];
+function draw(){const k=(K[sel]||{})[tf];if(!k||!plan.e||!T[sel])return;const c=cv.getContext('2d'),w=cv.clientWidth,h=cv.clientHeight,d=devicePixelRatio||1;cv.width=w*d;cv.height=h*d;c.setTransform(d,0,0,d,0,0);
+const v=k.slice(-60),ls=lines();let lo=Math.min(...v.map(x=>x.l),...ls.map(x=>x[1])),hi=Math.max(...v.map(x=>x.h),...ls.map(x=>x[1]));const pd=(hi-lo)*.05;lo-=pd;hi+=pd;if(froz){lo=froz[0];hi=froz[1]}
+const Y=p=>h-(p-lo)/(hi-lo)*h,bw=(w-76)/v.length;cv._m=[lo,hi,h];c.font='10px monospace';
+v.forEach((x,i)=>{const X=i*bw+bw/2;c.strokeStyle=c.fillStyle=x.c>=x.o?'#26d07c':'#ff5370';c.beginPath();c.moveTo(X,Y(x.h));c.lineTo(X,Y(x.l));c.stroke();c.fillRect(X-bw*.35,Math.min(Y(x.o),Y(x.c)),bw*.7,Math.max(1,Math.abs(Y(x.o)-Y(x.c))))});
+ls.forEach(l=>{const y=Y(l[1]);c.strokeStyle=c.fillStyle=l[2];c.setLineDash(l[3]?[6,4]:[2,3]);c.beginPath();c.moveTo(0,y);c.lineTo(w-74,y);c.stroke();c.setLineDash([]);c.fillRect(w-74,y-8,74,16);c.fillStyle='#000';c.fillText(l[0]+' '+(l[0]=='Price'?T[sel].lastPrice:fx(l[1])),w-72,y+3)})}
+cv.onpointerdown=e=>{if(!cv._m)return;const y=e.clientY-cv.getBoundingClientRect().top,[lo,hi,h]=cv._m;let b=null,bd=16;lines().forEach(l=>{const q=Math.abs(h-(l[1]-lo)/(hi-lo)*h-y);if(l[3]&&q<bd){bd=q;b=l[3]}});if(b){drag=b;froz=[lo,hi];cv.setPointerCapture(e.pointerId)}};
+cv.onpointermove=e=>{if(!drag)return;const[lo,hi,h]=cv._m,p=lo+(1-(e.clientY-cv.getBoundingClientRect().top)/h)*(hi-lo);plan[drag]=+p.toFixed(dec(sel));fill()};
+cv.onpointerup=cv.onpointercancel=()=>{drag=null;froz=null;draw()};
+[['en','e'],['sl','sl'],['tp','tp']].forEach(([i,k])=>$('#'+i).oninput=e=>{const v=parseFloat(e.target.value);if(v>0){plan[k]=v;calc()}});
+$('#bl').onclick=()=>{side=1;auto()};$('#bs').onclick=()=>{side=-1;auto()};$('#ba').onclick=auto;
+document.querySelectorAll('[data-tf]').forEach(b=>b.onclick=()=>{tf=+b.dataset.tf;document.querySelectorAll('[data-tf]').forEach(x=>x.className=x==b?'on':'');draw()});
+document.querySelector('[data-tf="15"]').className='on';
+$('#tb').onpointerdown=e=>{const r=e.target.closest('tr');if(r&&r.dataset.s)pick(r.dataset.s)};
+$('#q').oninput=$('#fl').onchange=$('#so').onchange=render;
+setInterval(flush,1000);setInterval(()=>{if(ws&&live&&Date.now()-lastMsg>20000)ws._down()},5000);addEventListener('resize',draw);init();
+</script></body></html>
